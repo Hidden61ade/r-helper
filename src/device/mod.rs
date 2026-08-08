@@ -35,7 +35,13 @@ impl CompleteDeviceState {
             FanMode::Manual => Some(command::get_fan_rpm(device, librazer::types::FanZone::Zone1)?),
             FanMode::Auto => None,
         };
-        let logo_mode = command::get_logo_mode(device)?;
+        // Devices without a lid logo don't answer logo queries; skip them to
+        // avoid slow retry loops on every state poll.
+        let logo_mode = if device.info().has_feature("lid-logo") {
+            command::get_logo_mode(device)?
+        } else {
+            LogoMode::Off
+        };
         let keyboard_brightness = command::get_keyboard_brightness(device)?;
         let lights_always_on = command::get_lights_always_on(device)?;
         let battery_care = command::get_battery_care(device)?;

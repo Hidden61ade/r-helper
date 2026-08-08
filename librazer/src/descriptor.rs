@@ -20,6 +20,13 @@ pub struct Descriptor {
     // Optional list of disallowed (CPU,GPU) boost combinations
     pub disallowed_boost_pairs: Option<&'static [(CpuBoost, GpuBoost)]>,
 }
+
+impl Descriptor {
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| *f == feature)
+    }
+}
+
 pub const SUPPORTED: &[Descriptor] = &[
     Descriptor {
         model_number_prefix: "RZ09-0427",
@@ -76,9 +83,64 @@ pub const SUPPORTED: &[Descriptor] = &[
         disallowed_boost_pairs: None,
     },
     Descriptor {
+        model_number_prefix: "RZ09-0485",
+        name: "Razer Blade 15” (2023)",
+        pid: 0x029e,
+        features: &["battery-care", "fan", "kbd-backlight", "lid-logo", "lights-always-on", "perf"],
+        init_cmds: &[],
+        perf_modes: None,
+        cpu_boosts: None,
+        gpu_boosts: None,
+        disallowed_boost_pairs: None,
+    },
+    Descriptor {
         model_number_prefix: "RZ09-0483",
         name: "Razer Blade 16” (2023)",
         pid: 0x029f,
+        features: &["battery-care", "fan", "kbd-backlight", "lid-logo", "lights-always-on", "perf"],
+        init_cmds: &[],
+        perf_modes: None,
+        cpu_boosts: None,
+        gpu_boosts: None,
+        disallowed_boost_pairs: None,
+    },
+    Descriptor {
+        model_number_prefix: "RZ09-0484",
+        name: "Razer Blade 18” (2023)",
+        pid: 0x02a0,
+        features: &["battery-care", "fan", "kbd-backlight", "lid-logo", "lights-always-on", "perf"],
+        init_cmds: &[],
+        perf_modes: None,
+        cpu_boosts: None,
+        gpu_boosts: None,
+        disallowed_boost_pairs: None,
+    },
+    Descriptor {
+        model_number_prefix: "RZ09-0508",
+        name: "Razer Blade 14” (2024)",
+        pid: 0x02b6,
+        features: &["battery-care", "fan", "kbd-backlight", "lights-always-on", "perf"],
+        init_cmds: &[],
+        perf_modes: None,
+        cpu_boosts: None,
+        gpu_boosts: None,
+        disallowed_boost_pairs: None,
+    },
+    Descriptor {
+        model_number_prefix: "RZ09-0510",
+        name: "Razer Blade 16” (2024)",
+        pid: 0x02b7,
+        features: &["battery-care", "fan", "kbd-backlight", "lid-logo", "lights-always-on", "perf"],
+        init_cmds: &[],
+        perf_modes: None,
+        cpu_boosts: None,
+        gpu_boosts: None,
+        disallowed_boost_pairs: None,
+    },
+    Descriptor {
+        model_number_prefix: "RZ09-0509",
+        name: "Razer Blade 18” (2024)",
+        pid: 0x02b8,
         features: &["battery-care", "fan", "kbd-backlight", "lid-logo", "lights-always-on", "perf"],
         init_cmds: &[],
         perf_modes: None,
@@ -107,9 +169,50 @@ pub const SUPPORTED: &[Descriptor] = &[
         ]),
     },
     Descriptor {
-        model_number_prefix: "RZ09-05306",
+        model_number_prefix: "RZ09-0530",
         name: "Razer Blade 14” (2025)",
         pid: 0x02c5,
+        features: &["battery-care", "fan", "kbd-backlight", "lid-logo", "lights-always-on", "perf"],
+        init_cmds: &[0x0081, 0x0086, 0x0f90, 0x0086, 0x0f10, 0x0087],
+        perf_modes: Some(&[
+            PerfMode::Battery,
+            PerfMode::Silent,
+            PerfMode::Balanced,
+            PerfMode::Performance,
+            PerfMode::Hyperboost,
+            PerfMode::Custom,
+        ]),
+        cpu_boosts: Some(&[CpuBoost::Low, CpuBoost::Medium, CpuBoost::High]),
+        gpu_boosts: Some(&[GpuBoost::Low, GpuBoost::Medium, GpuBoost::High]),
+        disallowed_boost_pairs: Some(&[
+            (CpuBoost::High, GpuBoost::High),
+        ]),
+    },
+    Descriptor {
+        model_number_prefix: "RZ09-0529",
+        name: "Razer Blade 18” (2025)",
+        pid: 0x02c7,
+        features: &["battery-care", "fan", "kbd-backlight", "lid-logo", "lights-always-on", "perf"],
+        init_cmds: &[0x0081, 0x0086, 0x0f90, 0x0086, 0x0f10, 0x0087],
+        perf_modes: Some(&[
+            PerfMode::Battery,
+            PerfMode::Silent,
+            PerfMode::Balanced,
+            PerfMode::Performance,
+            PerfMode::Hyperboost,
+            PerfMode::Custom,
+        ]),
+        cpu_boosts: Some(&[CpuBoost::Low, CpuBoost::Medium, CpuBoost::High]),
+        gpu_boosts: Some(&[GpuBoost::Low, GpuBoost::Medium, GpuBoost::High]),
+        disallowed_boost_pairs: Some(&[
+            (CpuBoost::High, GpuBoost::High),
+        ]),
+    },
+    // Same protocol as Blade 16 (2025) per openrazer; Panther Lake refresh.
+    Descriptor {
+        model_number_prefix: "RZ09-0581",
+        name: "Razer Blade 16” (2026)",
+        pid: 0x02e0,
         features: &["battery-care", "fan", "kbd-backlight", "lid-logo", "lights-always-on", "perf"],
         init_cmds: &[0x0081, 0x0086, 0x0f90, 0x0086, 0x0f10, 0x0087],
         perf_modes: Some(&[

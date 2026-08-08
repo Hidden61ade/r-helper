@@ -39,10 +39,23 @@ impl Device {
             let path = info.path();
             let device = api.open_path(path)?;
             if device.send_feature_report(&[0, 0]).is_ok() {
-                return Ok(Device { device, info: descriptor.clone() });
+                let device = Device { device, info: descriptor.clone() };
+                device.run_init_cmds();
+                return Ok(device);
             }
         }
         anyhow::bail!("Failed to open device {:?}", descriptor)
+    }
+
+    // Replays the startup command sequence Synapse sends on boot. Newer models
+    // (2025+) need this before performance modes work reliably. Individual
+    // failures are logged but do not abort the connection.
+    fn run_init_cmds(&self) {
+        for &cmd in self.info.init_cmds {
+            if let Err(e) = self.send(Packet::new(cmd, &[0, 0, 0, 0])) {
+                eprintln!("Warning: init command 0x{:04x} failed: {}", cmd, e);
+            }
+        }
     }
 
     pub fn send(&self, report: Packet) -> Result<Packet> {
@@ -113,16 +126,30 @@ impl Device {
     pub fn detect() -> Result<Device> {
         let (pid_list, model_number_prefix) = Device::enumerate()?;
 
-        match SUPPORTED
+        // Primary: match by BIOS model number (SystemSKU) prefix.
+        if let Some(supported) = SUPPORTED
             .iter()
             .find(|supported| model_number_prefix.starts_with(&supported.model_number_prefix))
         {
-            Some(supported) => Device::new(supported.clone()),
-            None => anyhow::bail!(
-                "Model {} with PIDs {:0>4x?} is not supported",
-                model_number_prefix,
-                pid_list
-            ),
+            return Device::new(supported.clone());
         }
+
+        // Fallback: the SKU is an unknown variant, but a laptop with a known
+        // USB PID is present. Same PID means same hardware/protocol, so reuse
+        // that descriptor instead of refusing to work.
+        if let Some(supported) = SUPPORTED.iter().find(|supported| pid_list.contains(&supported.pid))
+        {
+            eprintln!(
+                "Warning: unknown model {}, falling back to descriptor '{}' matched by PID 0x{:04x}",
+                model_number_prefix, supported.name, supported.pid
+            );
+            return Device::new(supported.clone());
+        }
+
+        anyhow::bail!(
+            "Model {} with PIDs {:0>4x?} is not supported",
+            model_number_prefix,
+            pid_list
+        )
     }
 }

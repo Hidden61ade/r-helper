@@ -447,8 +447,10 @@ impl RazerGuiApp {
             self.manual_fan_rpm = rpm;
         }
         self.status.fan_actual_rpm = get_fan_rpm_actual(device, librazer::types::FanZone::Zone1);
-        if let Ok(logo_mode) = command::get_logo_mode(device) {
-            self.status.logo_mode = Self::logo_mode_to_string(logo_mode).to_string();
+        if device.info().has_feature("lid-logo") {
+            if let Ok(logo_mode) = command::get_logo_mode(device) {
+                self.status.logo_mode = Self::logo_mode_to_string(logo_mode).to_string();
+            }
         }
 
         if let Ok(brightness) = command::get_keyboard_brightness(device) {
@@ -638,7 +640,9 @@ impl RazerGuiApp {
     fn apply_profile(&self, device: &Device, profile: &CompleteDeviceState) -> Result<()> {
         command::set_perf_mode(device, profile.perf_mode)?;
 
-        command::set_logo_mode(device, profile.logo_mode)?;
+        if device.info().has_feature("lid-logo") {
+            command::set_logo_mode(device, profile.logo_mode)?;
+        }
 
         if let Ok(current_brightness) = command::get_keyboard_brightness(device) {
             if current_brightness != profile.keyboard_brightness {
@@ -1030,11 +1034,15 @@ impl RazerGuiApp {
     fn render_lighting_section(&mut self, ui: &mut egui::Ui) {
         use ui::lighting::render_lighting_section;
 
+        let has_lid_logo =
+            self.device.as_ref().map(|d| d.info().has_feature("lid-logo")).unwrap_or(true);
+
         let action = render_lighting_section(
             ui,
             &self.status.logo_mode,
             &mut self.temp_brightness_step,
             &mut self.status.lights_always_on,
+            has_lid_logo,
         );
 
         if let Some(active) = action.slider_active {

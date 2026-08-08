@@ -47,6 +47,7 @@ impl Default for LightingAction {
 /// * `logo_mode` - The current logo lighting mode
 /// * `temp_brightness_step` - Mutable reference to brightness step index (0-15)
 /// * `lights_always_on` - Mutable reference to lights always on setting
+/// * `has_lid_logo` - Whether the device has a controllable lid logo
 ///
 /// # Returns
 /// The action requested by the user, if any
@@ -55,6 +56,7 @@ pub fn render_lighting_section(
     logo_mode: &str,
     temp_brightness_step: &mut usize,
     lights_always_on: &mut bool,
+    has_lid_logo: bool,
 ) -> LightingAction {
     let mut action = LightingAction::default();
 
@@ -62,8 +64,10 @@ pub fn render_lighting_section(
         ui.add(egui::Label::new("💡 Lighting").selectable(false));
         ui.separator();
 
-        // Logo Mode Selection
-        render_logo_mode_selection(ui, logo_mode, &mut action);
+        // Logo Mode Selection (only for devices with a controllable lid logo)
+        if has_lid_logo {
+            render_logo_mode_selection(ui, logo_mode, &mut action);
+        }
 
         // Brightness Slider
         render_brightness_controls(ui, temp_brightness_step, &mut action);
