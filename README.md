@@ -15,6 +15,17 @@ A Windows application to control Razer Blade settings w/o Synapse.
 - Keyboard backlight brightness control
 - Logo lighting: Static, Breathing, Off (only shown on devices with a lid logo)
 - Battery care: Toggle charging threshold (80%)
+- GPU: global rendering preference (Integrated / Auto / NVIDIA, via NVIDIA driver
+  settings) with a live indicator of which GPU drives the internal display.
+  Note: the display MUX itself (Advanced Optimus "NVIDIA GPU only" mode) has no
+  public API and can only be switched in NVIDIA Control Panel → Manage Display
+  Mode; the app provides a shortcut to it.
+- Macro keys (M3–M5): assignable actions handled by R-Helper instead of Synapse —
+  Page Up/Down, cycle display refresh rate, cycle performance mode, toggle
+  microphone mute. (M1/M2 send Page Up/Down directly from the keyboard firmware
+  and need no software.) The M3–M5 keys only emit events in the device's driver
+  mode, which is the same hardware flag as "Keyboard Backlight Always On";
+  R-Helper enables it automatically while macro key handling is on.
 
 ## Supported Devices
 

@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod device;
+mod macro_actions;
 mod messaging;
 mod power;
 mod system;
@@ -13,6 +14,8 @@ use egui::IconData;
 use anyhow::Result;
 use std::sync::mpsc;
 
+use librazer::gpu::{DisplayOwner, GpuPreference};
+use librazer::macro_keys::{MacroKey, MacroKeyEvent, MacroKeyListener};
 use librazer::types::{
     BatteryCare, CpuBoost, FanMode, GpuBoost, LightsAlwaysOn, LogoMode, MaxFanSpeedMode, PerfMode,
 };
@@ -35,6 +38,7 @@ enum InitMessage {
     PowerStateRead(bool),
     InitializationComplete,
     DeviceDetectionComplete(bool),
+    GpuStateRead(Option<GpuPreference>, DisplayOwner),
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +106,22 @@ struct RazerGuiApp {
     detecting_device: bool,
     device_detection_done: bool,
     min_detecting_until: std::time::Instant,
+    // GPU rendering preference (NVIDIA DRS) and current display owner
+    gpu_preference: Option<GpuPreference>,
+    display_owner: DisplayOwner,
+    // M1-M5 macro key handling (Synapse replacement)
+    macro_keys_enabled: bool,
+    macro_assignments: [ui::macro_keys::MacroAction; 3],
+    macro_key_listener: Option<MacroKeyListener>,
+    macro_key_rx: Option<mpsc::Receiver<MacroKeyEvent>>,
+    // Center-screen fade in/out notification for macro key actions
+    osd: Option<OsdState>,
+}
+
+struct OsdState {
+    icon: &'static str,
+    text: String,
+    shown_at: std::time::Instant,
 }
 
 impl RazerGuiApp {
@@ -200,6 +220,17 @@ impl RazerGuiApp {
             detecting_device: true,
             device_detection_done: false,
             min_detecting_until: now + std::time::Duration::from_secs(1),
+            gpu_preference: None,
+            display_owner: DisplayOwner::Unknown,
+            macro_keys_enabled: true,
+            macro_assignments: [
+                ui::macro_keys::MacroAction::CycleRefreshRate,
+                ui::macro_keys::MacroAction::CyclePerfMode,
+                ui::macro_keys::MacroAction::ToggleMicMute,
+            ],
+            macro_key_listener: None,
+            macro_key_rx: None,
+            osd: None,
         };
 
         // Kick off async device detection so the UI can show a clear “Detecting device…” state.
@@ -342,6 +373,10 @@ impl RazerGuiApp {
                 let _ = sender.send(InitMessage::PowerStateRead(ac_power));
             }
 
+            let gpu_preference = librazer::gpu::get_gpu_preference().ok();
+            let display_owner = librazer::gpu::get_display_owner();
+            let _ = sender.send(InitMessage::GpuStateRead(gpu_preference, display_owner));
+
             let _ = sender.send(InitMessage::InitializationComplete);
 
             let device_name_ref = device_name.as_deref();
@@ -379,6 +414,7 @@ impl RazerGuiApp {
                     self.detect_available_performance_modes();
                     if self.device.is_some() {
                         self.read_initial_device_state();
+                        self.start_macro_key_handling();
                         // Now that the device is known, we can show a brief init message.
                         self.set_status_message("Initializing...".to_string());
                     }
@@ -402,6 +438,10 @@ impl RazerGuiApp {
                 InitMessage::PowerStateRead(ac_power) => {
                     self.ac_power = ac_power;
                     self.init_power_read = true;
+                }
+                InitMessage::GpuStateRead(preference, display_owner) => {
+                    self.gpu_preference = preference;
+                    self.display_owner = display_owner;
                 }
                 InitMessage::InitializationComplete => {
                     self.fully_initialized = true;
@@ -962,6 +1002,272 @@ impl RazerGuiApp {
         }
     }
 
+    fn render_gpu_section(&mut self, ui: &mut egui::Ui) {
+        use ui::gpu::{render_gpu_section, GpuAction};
+
+        let action = render_gpu_section(ui, self.gpu_preference, self.display_owner);
+
+        match action {
+            GpuAction::None => {}
+            GpuAction::SetPreference(pref) => match librazer::gpu::set_gpu_preference(pref) {
+                Ok(()) => {
+                    self.gpu_preference = Some(pref);
+                    self.set_optional_status_message(format!("GPU preference: {:?}", pref));
+                }
+                Err(e) => {
+                    self.set_error_message(format!("Failed to set GPU preference: {}", e));
+                }
+            },
+            GpuAction::OpenWindowsGraphics => open_windows_graphics_settings(),
+            GpuAction::OpenNvidiaPanel => open_nvidia_control_panel(),
+        }
+    }
+
+    fn start_macro_key_handling(&mut self) {
+        if self.macro_key_listener.is_some() {
+            return;
+        }
+        match MacroKeyListener::start() {
+            Ok((listener, receiver)) => {
+                self.macro_key_listener = Some(listener);
+                self.macro_key_rx = Some(receiver);
+            }
+            Err(e) => eprintln!("Macro key listener unavailable: {}", e),
+        }
+        // The keys only emit events in driver mode (same device flag as
+        // "Keyboard Backlight Always On"), so turn it on when handling is active.
+        if self.macro_keys_enabled {
+            self.ensure_driver_mode();
+        }
+    }
+
+    fn ensure_driver_mode(&mut self) {
+        if self.status.lights_always_on {
+            return;
+        }
+        if let Some(ref device) = self.device {
+            match command::set_lights_always_on(device, LightsAlwaysOn::Enable) {
+                Ok(_) => {
+                    self.status.lights_always_on = true;
+                    self.update_stored_device_state();
+                }
+                Err(e) => {
+                    self.set_error_message(format!("Failed to enable driver mode: {}", e));
+                }
+            }
+        }
+    }
+
+    fn process_macro_key_events(&mut self) {
+        let mut events = Vec::new();
+        if let Some(ref receiver) = self.macro_key_rx {
+            while let Ok(event) = receiver.try_recv() {
+                events.push(event);
+            }
+        }
+        for event in events {
+            match event {
+                MacroKeyEvent::Pressed(key) => {
+                    if self.macro_keys_enabled {
+                        self.dispatch_macro_action(key);
+                    }
+                }
+                MacroKeyEvent::Unknown(code) => {
+                    // Helps mapping keys on models with different codes.
+                    self.set_status_message(format!("Unmapped macro key code: 0x{:02x}", code));
+                }
+            }
+        }
+    }
+
+    fn show_osd(&mut self, icon: &'static str, text: String) {
+        self.osd = Some(OsdState { icon, text, shown_at: std::time::Instant::now() });
+    }
+
+    fn dispatch_macro_action(&mut self, key: MacroKey) {
+        use ui::macro_keys::MacroAction;
+        let label = key.label();
+        match self.macro_assignments[key as usize] {
+            MacroAction::Disabled => {}
+            MacroAction::PageUp => {
+                if let Err(e) = macro_actions::send_page_key(true) {
+                    self.set_error_message(format!("{}: {}", label, e));
+                }
+            }
+            MacroAction::PageDown => {
+                if let Err(e) = macro_actions::send_page_key(false) {
+                    self.set_error_message(format!("{}: {}", label, e));
+                }
+            }
+            MacroAction::CycleRefreshRate => match macro_actions::cycle_refresh_rate() {
+                Ok(hz) => {
+                    self.set_status_message(format!("{}: Refresh rate → {} Hz", label, hz));
+                    self.show_osd("🖵", format!("{} Hz", hz));
+                }
+                Err(e) => self.set_error_message(format!("{}: {}", label, e)),
+            },
+            MacroAction::CyclePerfMode => self.cycle_performance_mode(label),
+            MacroAction::ToggleMicMute => match macro_actions::toggle_mic_mute() {
+                Ok(muted) => {
+                    self.set_status_message(format!(
+                        "{}: Microphone {}",
+                        label,
+                        if muted { "muted" } else { "unmuted" }
+                    ));
+                    if muted {
+                        self.show_osd("🔇", "Microphone Muted".to_string());
+                    } else {
+                        self.show_osd("🎤", "Microphone On".to_string());
+                    }
+                }
+                Err(e) => self.set_error_message(format!("{}: {}", label, e)),
+            },
+        }
+    }
+
+    /// Renders the center-screen fade in/out overlay in its own borderless,
+    /// click-through, always-on-top viewport.
+    fn render_osd(&mut self, ctx: &egui::Context) {
+        const FADE_IN: f32 = 0.18;
+        const HOLD: f32 = 1.1;
+        const FADE_OUT: f32 = 0.5;
+
+        let Some(ref osd) = self.osd else {
+            return;
+        };
+        let t = osd.shown_at.elapsed().as_secs_f32();
+        if t >= FADE_IN + HOLD + FADE_OUT {
+            self.osd = None;
+            return;
+        }
+        let alpha = if t < FADE_IN {
+            t / FADE_IN
+        } else if t < FADE_IN + HOLD {
+            1.0
+        } else {
+            1.0 - (t - FADE_IN - HOLD) / FADE_OUT
+        }
+        .clamp(0.0_f32, 1.0_f32);
+
+        // Smooth fade needs faster repaints than the app's regular cadence.
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+
+        let size = egui::vec2(300.0_f32, 130.0_f32);
+        let monitor =
+            ctx.input(|i| i.viewport().monitor_size).unwrap_or(egui::vec2(1920.0, 1080.0));
+        let position = egui::pos2((monitor.x - size.x) * 0.5, (monitor.y - size.y) * 0.55);
+
+        let icon = osd.icon;
+        let text = osd.text.clone();
+        let builder = egui::ViewportBuilder::default()
+            .with_title("R-Helper OSD")
+            .with_inner_size(size)
+            .with_position(position)
+            .with_transparent(true)
+            .with_decorations(false)
+            .with_always_on_top()
+            .with_mouse_passthrough(true)
+            .with_taskbar(false)
+            .with_active(false)
+            .with_resizable(false);
+
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("rhelper_osd"),
+            builder,
+            move |ctx, _class| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
+                    .show(ctx, |ui| {
+                        let rect = ui.max_rect();
+                        let background = egui::Color32::from_rgba_unmultiplied(
+                            16,
+                            16,
+                            16,
+                            (215.0_f32 * alpha) as u8,
+                        );
+                        ui.painter().rect_filled(rect, egui::CornerRadius::same(14), background);
+
+                        let foreground = egui::Color32::from_rgba_unmultiplied(
+                            255,
+                            255,
+                            255,
+                            (255.0_f32 * alpha) as u8,
+                        );
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(18.0_f32);
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(icon).size(46.0_f32).color(foreground),
+                                )
+                                .selectable(false),
+                            );
+                            ui.add_space(4.0_f32);
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&text).size(19.0_f32).color(foreground),
+                                )
+                                .selectable(false),
+                            );
+                        });
+                    });
+            },
+        );
+    }
+
+    fn cycle_performance_mode(&mut self, key_label: &str) {
+        let modes = self.available_performance_modes.clone();
+        if modes.is_empty() {
+            return;
+        }
+        let next_index = Self::string_to_perf_mode(&self.status.performance_mode)
+            .and_then(|current| modes.iter().position(|m| *m == current))
+            .map(|i| (i + 1) % modes.len())
+            .unwrap_or(0);
+        let mode = Self::perf_mode_to_string(modes[next_index]);
+        self.set_performance_mode(&mode);
+        if self.status.performance_mode == mode {
+            self.set_status_message(format!("{}: Performance mode → {}", key_label, mode));
+            self.show_osd("⚡", mode);
+        }
+    }
+
+    fn render_macro_keys_section(&mut self, ui: &mut egui::Ui) {
+        use ui::macro_keys::{render_macro_keys_section, MacroKeysUiAction};
+
+        let action = render_macro_keys_section(
+            ui,
+            self.macro_keys_enabled,
+            &self.macro_assignments,
+            self.status.lights_always_on,
+            self.device.is_some(),
+        );
+
+        match action {
+            MacroKeysUiAction::None => {}
+            MacroKeysUiAction::SetEnabled(enabled) => {
+                self.macro_keys_enabled = enabled;
+                if enabled {
+                    self.ensure_driver_mode();
+                }
+                self.set_optional_status_message(format!(
+                    "Macro keys {}",
+                    if enabled { "enabled" } else { "disabled" }
+                ));
+            }
+            MacroKeysUiAction::Assign(index, assignment) => {
+                self.macro_assignments[index] = assignment;
+                self.set_optional_status_message(format!(
+                    "M{} → {}",
+                    index + 3,
+                    assignment.label()
+                ));
+            }
+            MacroKeysUiAction::EnableDriverMode => {
+                self.ensure_driver_mode();
+            }
+        }
+    }
+
     fn set_logo_mode(&mut self, mode: &str) {
         let logo_mode = match Self::string_to_logo_mode(mode) {
             Some(mode) => mode,
@@ -1100,10 +1406,19 @@ impl RazerGuiApp {
 }
 
 impl eframe::App for RazerGuiApp {
+    // A fully transparent clear color so the OSD viewport can have see-through
+    // corners. The main window surface is opaque, so it is unaffected: its
+    // CentralPanel covers the whole window.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
 
         self.process_background_initialization();
+        self.process_macro_key_events();
+        self.render_osd(ctx);
 
         let hidden_on =
             ctx.data(|d| d.get_temp::<bool>("perf_hidden_show".into()).unwrap_or(false));
@@ -1190,6 +1505,9 @@ impl eframe::App for RazerGuiApp {
                         }
 
                         self.sync_other_dynamic_state();
+                        // The display owner can change externally (NVIDIA Control
+                        // Panel display mode switch); keep the indicator fresh.
+                        self.display_owner = librazer::gpu::get_display_owner();
                         if self.device.is_some() {
                             if self.last_state_check_time.elapsed().as_secs_f32() >= 3.0 {
                                 if let Err(_e) = self.check_device_state_changes() {
@@ -1237,6 +1555,12 @@ impl eframe::App for RazerGuiApp {
             ui.separator();
 
             self.render_fan_section(ui);
+            ui.separator();
+
+            self.render_gpu_section(ui);
+            ui.separator();
+
+            self.render_macro_keys_section(ui);
             ui.separator();
 
             self.render_lighting_section(ui);
@@ -1297,6 +1621,35 @@ fn load_icon() -> IconData {
 }
 
 #[cfg(windows)]
+fn open_windows_graphics_settings() {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", "ms-settings:display-advancedgraphics"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+}
+
+#[cfg(not(windows))]
+fn open_windows_graphics_settings() {}
+
+#[cfg(windows)]
+fn open_nvidia_control_panel() {
+    // Prefer the classic install location, fall back to the Store app.
+    let nvcp = r"C:\Program Files\NVIDIA Corporation\Control Panel Client\nvcplui.exe";
+    if std::path::Path::new(nvcp).exists() {
+        let _ = std::process::Command::new(nvcp).spawn();
+    } else {
+        let _ = std::process::Command::new("explorer.exe")
+            .arg(r"shell:AppsFolder\NVIDIACorp.NVIDIAControlPanel_56jybvy8sckqj!NVIDIACorp.NVIDIAControlPanel")
+            .spawn();
+    }
+}
+
+#[cfg(not(windows))]
+fn open_nvidia_control_panel() {}
+
+#[cfg(windows)]
 fn set_windows_app_id() {
     use windows::core::PCWSTR;
     use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
@@ -1313,7 +1666,7 @@ fn set_windows_app_id() {}
 
 fn main() -> Result<(), eframe::Error> {
     set_windows_app_id();
-    let initial_height = 500.0;
+    let initial_height = 780.0;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([450.0, initial_height])
